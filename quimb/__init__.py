@@ -117,6 +117,9 @@ from .gen.operators import (
     destroy,
     num,
     ham_hubbard_hardcore,
+    ham_tb,
+    ham_tb_energy,
+    ham_tb_1pdm,
 )
 from .gen.states import (
     basis_vec,
@@ -334,6 +337,9 @@ __all__ = [
     'destroy',
     'num',
     'ham_hubbard_hardcore',
+    'ham_tb',
+    'ham_tb_energy',
+    'ham_tb_1pdm',
     'zspin_projector',
     'basis_vec',
     'up',

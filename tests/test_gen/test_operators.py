@@ -236,3 +236,57 @@ class TestHubbardSpinless:
         ens = [qu.expec(cn, qu.ptr(gs, dims, i)) for i in range(8)]
         for en in ens:
             assert en == pytest.approx(0.5, rel=1e-6)
+
+
+class TestTB:
+
+    @pytest.mark.parametrize("t", [0, 1 + .2j])
+    def test_nn(self, t):
+        assert_allclose(qu.ham_tb(3, t), [
+            (0, t, 0),
+            (np.conj(t), 0, t),
+            (0, np.conj(t), 0),
+        ])
+
+    def test_nnn(self):
+        e, t1, t2 = 1, 1j, .1 + .2j
+        assert_allclose(qu.ham_tb(2, (e, t1, t2)), [
+            (e, t1),
+            (np.conj(t1), e),
+        ])
+        assert_allclose(qu.ham_tb(3, (e, t1, t2)), [
+            (e, t1, t2),
+            (np.conj(t1), e, t1),
+            (np.conj(t2), np.conj(t1), e),
+        ])
+        assert_allclose(qu.ham_tb(4, (e, t1, t2)), [
+            (e, t1, t2, 0),
+            (np.conj(t1), e, t1, t2),
+            (np.conj(t2), np.conj(t1), e, t1),
+            (0, np.conj(t2), np.conj(t1), e),
+        ])
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_nnn_raise(self):
+        """Non-Hermitian diagonal"""
+        qu.ham_tb(3, (.1j, 0))
+
+    def test_block(self):
+        e, t = np.eye(2), np.array([(.1, .2), (.3, .4j)])
+        e[1, 1] += 2
+        z = np.zeros_like(e)
+        assert_allclose(qu.ham_tb(1, (e, t)), e)
+        assert_allclose(qu.ham_tb(2, (e, t)), np.block([
+            [e, t],
+            [np.conj(t).T, e],
+        ]))
+        assert_allclose(qu.ham_tb(3, (e, t)), np.block([
+            [e, t, z],
+            [np.conj(t).T, e, t],
+            [z, np.conj(t).T, e],
+        ]))
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_block_fail(self):
+        """Shape mismatch"""
+        qu.ham_tb(3, (np.zeros(3), np.eye(2)))
