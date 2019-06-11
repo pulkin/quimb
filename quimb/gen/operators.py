@@ -958,7 +958,8 @@ def _hubbard_canonic_1p_form(blocks):
 
     Returns
     -------
-    A 3D array with square tight-binding blocks.
+    blocks : array
+        A 3D array with square tight-binding blocks.
     """
     # Make iterable
     try:
@@ -1011,7 +1012,8 @@ def ham_tb(n: int, blocks) -> np.ndarray:
 
     Returns
     -------
-    The non-interacting Hamiltonian matrix in the single-particle sector (band Hamiltonian).
+    H : array
+        The non-interacting Hamiltonian matrix in the single-particle sector (band Hamiltonian).
     """
     blocks = _hubbard_canonic_1p_form(blocks)
     _n = len(blocks)
@@ -1041,7 +1043,8 @@ def ham_tb_energy(n: int, blocks) -> float:
 
     Returns
     -------
-    The total ground-state energy of the band Hamiltonian.
+    E : float
+        The total ground-state energy of the band Hamiltonian.
     """
     e = np.linalg.eigvalsh(ham_tb(n, blocks))
     return e[e < 0].sum()
@@ -1061,7 +1064,8 @@ def ham_tb_1pdm(n: int, blocks, tol: float = 1e-7) -> np.ndarray:
 
     Returns
     -------
-    The single-particle density matrix.
+    dm : array
+        The single-particle density matrix.
     """
     e, psi = np.linalg.eig(ham_tb(n, blocks))
     if np.sum(abs(e) < tol) > 0:
