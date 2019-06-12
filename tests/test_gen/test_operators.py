@@ -290,3 +290,39 @@ class TestTB:
     def test_block_fail(self):
         """Shape mismatch"""
         qu.ham_tb(3, (np.zeros(3), np.eye(2)))
+
+    @pytest.mark.parametrize("n", [3, 4])
+    @pytest.mark.parametrize("t", [1, 1 + .1j])
+    def test_nn_energy_dm(self, n, t):
+        def ref_k(n):
+            return np.linspace(0, qu.pi, n+1, endpoint=False)[1:]
+
+        def ref_e(n, e, t):
+            return 2 * abs(t) * np.cos(ref_k(n)) + e
+
+        def ref_etot(n, e, t):
+            e = ref_e(n, e, t)
+            return e[e < 0].sum()
+
+        def ref_psi(n, t):
+            k = ref_k(n)[np.newaxis, :]
+            j = np.arange(0, n)[:, np.newaxis]
+            phi = np.angle(t)
+            psi = 2.j * np.sin(k * (j+1)) * np.exp(- 1.j * phi * j)
+            psi /= np.linalg.norm(psi, axis=0)
+            return psi
+
+        def ref_dm(n, e, t):
+            psi = ref_psi(n, t)
+            e = ref_e(n, e, t)
+            psi = psi[:, e < 0]
+            return psi.dot(psi.conj().T)
+
+        e = -0.1
+        assert_allclose(qu.ham_tb_energy(n, (e, t)), ref_etot(n, e, t), atol=1e-12)
+        assert_allclose(qu.ham_tb_1pdm(n, (e, t)), ref_dm(n, e, t), atol=1e-12)
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_zero_energy_fail(self):
+        """Zero-energy states (g.s. degeneracy)"""
+        qu.ham_tb_1pdm(5, 1 + .1j)
