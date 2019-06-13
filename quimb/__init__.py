@@ -88,6 +88,7 @@ from .linalg.mpi_launcher import get_mpi_pool
 # Generating objects
 from .gen.operators import (
     spin_operator,
+    fermion_operator,
     pauli,
     hadamard,
     phase_gate,
@@ -309,6 +310,7 @@ __all__ = [
     'estimate_rank',
     # Gen ------------------------------------------------------------------- #
     'spin_operator',
+    'fermion_operator',
     'pauli',
     'hadamard',
     'phase_gate',

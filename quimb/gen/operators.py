@@ -102,6 +102,44 @@ def spin_operator(label, S=1 / 2, **kwargs):
     return op
 
 
+@functools.lru_cache(maxsize=16)
+def fermion_operator(label, **kwargs):
+    """
+    Generates fermion operators.
+
+    Parameters
+    ----------
+    label : str
+        The type of operator, can be one of four options:
+            - ``{'z', 'Z'}``, anti-commutation operator.
+            - ``{'+', 'c'}``, Creation operator.
+            - ``{'-', 'a'}``, Annihilation operator.
+            - ``{'i', 'I'}``, identity operator.
+    kwargs
+        Passed to :func:`quimbify`.
+
+    Returns
+    -------
+    S : immutable operator
+        The spin operator.
+    """
+    s = {
+        "z": "z",
+        "Z": "z",
+        "+": "+",
+        "c": "+",
+        "-": "-",
+        "d": "-",
+        "i": "i",
+        "I": "i",
+    }[label]
+    result = spin_operator(s, **kwargs)
+    if s == "z":
+        result = qu(2*result)
+        make_immutable(result)
+    return result
+
+
 @functools.lru_cache(maxsize=8)
 def pauli(xyz, dim=2, **kwargs):
     """Generates the pauli operators for dimension 2 or 3.

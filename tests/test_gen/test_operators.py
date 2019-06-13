@@ -32,6 +32,34 @@ class TestSpinOperator:
         assert_allclose(qu.eigvalsh(op), np.linspace(-S, S, D), atol=1e-13)
 
 
+class TestFermions:
+    def test(self):
+        o, create, annihilate, z = map(qu.fermion_operator, "i+-z")
+
+        c = create & z & z, o & create & z, o & o & create
+        a = annihilate & z & z, o & annihilate & z, o & o & annihilate
+
+        one = np.eye(c[0].shape[0])
+
+        # P.n. operator
+        for _c, _a in zip(c, a):
+            assert_allclose(_c.dot(_a) + _a.dot(_c), one)
+
+        # Double c/a
+        for _c in c:
+            assert_allclose(_c.dot(_c), 0)
+        for _a in a:
+            assert_allclose(_a.dot(_a), 0)
+
+        # Anticommutation symmetric
+        assert_allclose(c[0].dot(c[1]), -c[1].dot(c[0]))
+        assert_allclose(a[0].dot(a[2]), -a[2].dot(a[0]))
+
+        # Anticommutation asymmetric
+        assert_allclose(c[0].dot(a[2]), -a[2].dot(c[0]))
+        assert_allclose(a[0].dot(c[1]), -c[1].dot(a[0]))
+
+
 class TestPauli:
     def test_pauli_dim2(self):
         for dir in (1, 'x', 'X',
