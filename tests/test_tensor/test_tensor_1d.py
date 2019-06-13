@@ -551,6 +551,15 @@ class TestMatrixProductState:
         psi0XX_s = psi0.gate_with_auto_swap(CNOT, (4, 13))
         assert psi0XX.H @ psi0XX_s == pytest.approx(1.0)
 
+    def test_single(self):
+        mps = MatrixProductState([np.ones(2)])
+        assert len(mps.tensors) == 1
+        assert mps.tensors[0].shape == (2,)
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_single_cyclic(self):
+        MatrixProductOperator([np.eye(2)[np.newaxis, np.newaxis, :, :]])
+
 
 class TestMatrixProductOperator:
 
