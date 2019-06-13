@@ -2278,32 +2278,42 @@ class MatrixProductOperator(TensorNetwork1DFlat,
 
         self.cyclic = (_ndim(arrays[0]) == 4)
 
+        if self.cyclic and len(sites) == 1:
+            raise NotImplementedError("No convention for a single-site cyclic MPO")
+
         # transpose arrays to 'lrud' order.
         def gen_orders():
-            lud_ord = tuple(shape.replace('r', "").find(x) for x in 'lud')
-            rud_ord = tuple(shape.replace('l', "").find(x) for x in 'rud')
-            lrud_ord = tuple(map(shape.find, 'lrud'))
-            yield rud_ord if not self.cyclic else lrud_ord
-            for _ in range(len(sites) - 2):
-                yield lrud_ord
-            yield lud_ord if not self.cyclic else lrud_ord
+            if len(sites) == 1:
+                yield tuple(shape.replace('r', "").replace('l', "").find(x) for x in 'ud')
+            else:
+                lud_ord = tuple(shape.replace('r', "").find(x) for x in 'lud')
+                rud_ord = tuple(shape.replace('l', "").find(x) for x in 'rud')
+                lrud_ord = tuple(map(shape.find, 'lrud'))
+                yield rud_ord if not self.cyclic else lrud_ord
+                for _ in range(len(sites) - 2):
+                    yield lrud_ord
+                yield lud_ord if not self.cyclic else lrud_ord
 
         def gen_inds():
-            cyc_bond = (rand_uuid(base=bond_name),) if self.cyclic else ()
+            if len(sites) == 1:
+                yield (next(upper_inds), next(lower_inds))
+            else:
+                cyc_bond = (rand_uuid(base=bond_name),) if self.cyclic else ()
 
-            nbond = rand_uuid(base=bond_name)
-            yield (*cyc_bond, nbond, next(upper_inds), next(lower_inds))
-            pbond = nbond
-            for _ in range(len(sites) - 2):
                 nbond = rand_uuid(base=bond_name)
-                yield (pbond, nbond, next(upper_inds), next(lower_inds))
+                yield (*cyc_bond, nbond, next(upper_inds), next(lower_inds))
                 pbond = nbond
-            yield (pbond, *cyc_bond, next(upper_inds), next(lower_inds))
+                for _ in range(len(sites) - 2):
+                    nbond = rand_uuid(base=bond_name)
+                    yield (pbond, nbond, next(upper_inds), next(lower_inds))
+                    pbond = nbond
+                yield (pbond, *cyc_bond, next(upper_inds), next(lower_inds))
 
         def gen_tensors():
             for array, site_tag, inds, order in zip(arrays, site_tags,
                                                     gen_inds(), gen_orders()):
 
+                print(array.shape, order)
                 yield Tensor(array.transpose(*order), inds=inds, tags=site_tag)
 
         super().__init__(gen_tensors(), structure=site_tag_id, sites=sites,

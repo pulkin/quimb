@@ -721,6 +721,15 @@ class TestMatrixProductOperator:
         k.align_(X, b)
         assert (k & X & b) ^ ...
 
+    def test_single(self):
+        mpo = MatrixProductOperator([np.eye(2)])
+        assert len(mpo.tensors) == 1
+        assert mpo.tensors[0].shape == (2, 2)
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_single_cyclic(self):
+        MatrixProductOperator([np.eye(2)[np.newaxis, np.newaxis, :, :]])
+
 
 # --------------------------------------------------------------------------- #
 #                         Test specific 1D instances                          #
