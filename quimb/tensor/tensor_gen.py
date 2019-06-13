@@ -139,10 +139,13 @@ def MPS_product_state(arrays, cyclic=False, **mps_opts):
     cyc_dim = (1,) if cyclic else ()
 
     def gen_array_shapes():
-        yield (*cyc_dim, 1, -1)
-        for _ in range(len(arrays) - 2):
-            yield (1, 1, -1)
-        yield (*cyc_dim, 1, -1)
+        if len(arrays) == 1:
+            yield (-1,)
+        else:
+            yield (*cyc_dim, 1, -1)
+            for _ in range(len(arrays) - 2):
+                yield (1, 1, -1)
+            yield (*cyc_dim, 1, -1)
 
     mps_arrays = (_asarray(array).reshape(*shape)
                   for array, shape in zip(arrays, gen_array_shapes()))
