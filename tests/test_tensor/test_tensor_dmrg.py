@@ -10,6 +10,8 @@ from quimb import (
     is_eigenvector,
     eigh,
     heisenberg_energy,
+    ham_tb_energy,
+    ham_tb_1pdm,
 )
 
 from quimb.tensor import (
@@ -20,6 +22,8 @@ from quimb.tensor import (
     MPO_ham_XY,
     MPO_ham_heis,
     MPO_ham_mbl,
+    MPO_ham_hubbard,
+    MPO_fermion_number,
     MovingEnvironment,
     DMRG1,
     DMRG2,
@@ -334,6 +338,40 @@ class TestDMRG2:
 
         assert_allclose(H_explicit, H_mpo.to_dense())
         assert_allclose(H_explicit, H_sps.A)
+
+    @pytest.mark.parametrize("n", [2, 3])
+    @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
+                                                               np.exp(1.j * np.arange(9)).reshape(3, 3)]])
+    def test_tight_binding(self, n, blocks):
+        from quimb.gen.operators import _hubbard_canonic_1p_form
+
+        H = MPO_ham_hubbard(n, blocks)
+        dmrg = DMRG2(H)
+        dmrg.solve()
+
+        assert_allclose(dmrg.energy, ham_tb_energy(n, blocks))
+
+        uc_size = _hubbard_canonic_1p_form(blocks).shape[1]
+        N = n * uc_size
+
+        try:
+            rho_ref = ham_tb_1pdm(n, blocks)
+        except ValueError:
+            # No DM comparison for degenerate g.s.
+            return
+
+        rho_1p = np.empty((N, N), dtype=np.complex128)
+        ket = dmrg.state
+        bra = ket.H
+
+        for i in range(N):
+            for j in range(N):
+                dme = MPO_fermion_number(N, (i, j))
+                bra.align_(dme, ket)
+                result = bra & dme & ket
+                rho_1p[i, j] = result ^ all
+
+        assert_allclose(rho_1p, rho_ref, atol=1e-5)
 
 
 class TestDMRGX:

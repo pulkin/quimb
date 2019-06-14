@@ -1,12 +1,13 @@
 """Generate specific tensor network states and operators.
 """
 from numbers import Integral
+from itertools import permutations
 
 import numpy as np
 
 from ..core import make_immutable, ikron
 from ..linalg.base_linalg import norm_fro_dense
-from ..gen.operators import spin_operator, eye, _gen_mbl_random_factors
+from ..gen.operators import spin_operator, fermion_operator, eye, _gen_mbl_random_factors, _hubbard_canonic_1p_form
 from ..gen.rand import randn, choice, random_seed_fn, rand_phase
 from .tensor_core import Tensor, _asarray
 from .tensor_1d import MatrixProductState, MatrixProductOperator
@@ -1250,3 +1251,390 @@ def NNI_ham_mbl(n, dh, j=1.0, seed=None, S=1 / 2, *, cyclic=False,
     H = _ham_mbl(n, dh=dh, j=j, seed=seed, S=S, cyclic=cyclic,
                  dh_dist=dh_dist, dh_dim=dh_dim, beta=beta)
     return H.build_nni(n, **nni_opts)
+
+
+class FSAGenerator(object):
+
+    def __init__(self, dims: int):
+        """
+        A finite signalling agent (FSA) MPO generator inspired by
+        PRA 78 012356 (2008). Constructs sparse MPOs from diagrams.
+
+        Parameters
+        ----------
+        dims : int
+            The number of aux bonds in MPO (= 2 * dimensionality of the problem).
+        """
+        self.dims = dims
+        self.signals = []
+        for i in range(dims):
+            self.signals.append(set())
+        self.transitions = {}
+
+    def __call__(self, *args):
+        """Sets the signal to a non-zero value."""
+        if len(args) != self.dims + 1:
+            raise ValueError(f"Wrong number of arguments supplied: expected {self.dims + 1}, got {len(args)}")
+
+        for i in range(self.dims):
+            self.signals[i].add(args[i])
+
+        self.transitions[args[:-1]] = args[-1]
+
+    def __setitem__(self, key, item):
+        return self(*key, item)
+
+    def __iter__(self):
+        for k in sorted(self.transitions):
+            yield k, self.transitions[k]
+
+    def __str__(self):
+        return ", ".join(f"{k} = {v}" for k, v in self)
+
+    def __repr__(self):
+        return f"FSAGenerator(dims={self.dims})"
+
+    def get_lookup(self, order=sorted):
+        """
+        Converts index labels into integers using
+        the order specified.
+
+        Parameters
+        ----------
+        order : Callable
+            The ordering function.
+
+        Returns
+        -------
+            Lookup dicts for every dimension.
+        """
+        return tuple(dict(zip(order(i), range(len(i)))) for i in self.signals)
+
+    def el_shape(self):
+        """
+        Returns the common element shape.
+        """
+
+        def get_shape(e):
+            if isinstance(e, np.ndarray):
+                return e.shape
+            elif isinstance(e, (list, tuple)):
+                return np.array(e).shape
+            elif isinstance(e, (str, int, float, complex)):
+                return tuple()
+            else:
+                raise ValueError(f"Unknown type to measure the shape: {e}")
+
+        result = set(map(get_shape, self.transitions.values()))
+        if len(result) == 1:
+            return result.pop()
+        elif len(result) == 0:
+            raise ValueError("No transitions declared: no shape can be measured")
+        else:
+            raise ValueError(f"Several different shapes found: {result}")
+
+    def as_tensor(self, lookup=None):
+        """
+        Assembles an MPO tensor.
+
+        Parameters
+        ----------
+        lookup : Iterable
+            Lookup tables for every dimension.
+
+        Returns
+        -------
+        A numpy tensor with the MPO.
+        """
+        dtype = np.array(tuple(self.transitions.values())).dtype
+        result = np.zeros(tuple(len(i) for i in self.signals) + self.el_shape(), dtype=dtype)
+        if lookup is None:
+            lookup = self.get_lookup()
+        for k, v in self.transitions.items():
+            index = tuple(lookup[i][kk] for i, kk in enumerate(k))
+            result[index] = v
+        return result
+
+    def same_dims(self, dim1, dim2):
+        """
+        Declares auxiliary indexes of an MPO to correspond
+        to the same dimension by truncating dead-end states.
+        This is an immediate operation.
+        """
+        new = self.signals[dim1] & self.signals[dim2]
+        self.signals[dim1] = set(new)
+        self.signals[dim2] = set(new)
+        self.remove_invalid_transitions()
+
+    def remove_invalid_transitions(self):
+        """
+        Finds and cleans-up dead-end states and transitions.
+        """
+        transaction = set()
+        for k in self.transitions.keys():
+            for i, signal in enumerate(k):
+                if signal not in self.signals[i]:
+                    transaction.add(k)
+                    break
+        for k in transaction:
+            del self.transitions[k]
+
+    def remove_signals(self, dim: int, *signals):
+        """
+        Removes specific signals from the dimension.
+
+        Parameters
+        ----------
+        dim : int
+            The dimension to process.
+        *signals
+            Signals to remove.
+        """
+        signals = set(signals)
+        self.signals[dim] -= signals
+
+        for k in self.transitions.keys():
+            if k[dim] in signals:
+                del self.transitions[k]
+
+    def constrain_signals(self, dim, *signals):
+        """
+        Constrains the specific dimension to a
+        subset of signals.
+
+        Parameters
+        ----------
+        dim : int
+            The dimension to process.
+        *signals
+            Signals to keep.
+        """
+        self.remove_signals(dim, *(set(self.signals[dim]) - set(signals)))
+
+    def copy(self):
+        """
+        Returns a deep copy of self.
+        """
+        result = self.__class__(self.dims)
+        result.signals = list(set(i) for i in self.signals)
+        result.transitions = dict(self.transitions)
+        return result
+
+
+def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray:
+    """
+    Generate the multi-band Hubbard Hamiltonian MPO tensors.
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+    symbolic : bool
+        Symbolic tensors for debugging the MPO construction.
+
+    Yields
+    ------
+    MPO tensors.
+    """
+    blocks = _hubbard_canonic_1p_form(blocks)
+
+    # N - unit cell size
+    N = blocks.shape[1]
+
+    if symbolic:
+        op_one, op_a_, op_a, op_sz, op_n = "1", "a^", "a", "sz", "n"
+        s = blocks.shape
+        if s[1] == s[2] == 1:
+            if s[0] > 2:
+                fmt = "t_{0:d}"
+            else:
+                fmt = "t"
+            fmt_diag = "e"
+        elif s[0] == 1:
+            fmt = "t_{1:d}_{2:d}"
+            fmt_diag = "e_{:d}"
+        else:
+            fmt = "t_{0:d}_[{1:d},{2:d}]"
+            fmt_diag = "e_{:d}"
+
+        blocks_num = blocks
+        blocks = np.array(
+            tuple(fmt.format(*_i) if blocks_num[_i] != 0 else "" for _i in np.ndindex(*s))
+        )
+        blocks.shape = s
+        blocks[0, range(N), range(N)] = tuple(fmt_diag.format(_i) if blocks_num[0, _i, _i] != 0 else "" for _i in range(N))
+
+        scalar_product = lambda x, y: f"{{{x},{y}}}"
+        dot_product = lambda x, y: f"({x},{y})"
+        conj = lambda x: x + "^"
+        is_nonzero = lambda x: x != ""
+
+    else:
+        op_one, op_a_, op_a, op_sz = map(fermion_operator, "i+-z")
+        op_n = op_a_.dot(op_a)
+
+        scalar_product = lambda x, y: x * y
+        dot_product = np.dot
+        conj = np.conj
+        is_nonzero = lambda x: x != 0
+
+    blocks_rview = blocks.swapaxes(0, 1).reshape((N, len(blocks) * N))
+
+    # The index 1, 2 stands for the order of the operator appearing in the MPO
+    op_a1 = dot_product(op_one, op_a)
+    op_a1_ = dot_product(op_a_, op_one)
+    op_a2 = dot_product(op_sz, op_a)
+    op_a2_ = dot_product(op_a_, op_sz)
+
+    g = FSAGenerator(2)
+    # TODO The MPO can be optimized by allowing different MPOs at different unit cell positions
+    # Rules for constructing single-particle terms:
+    # AMP    1     2          i-1   i    i+1  i+2        i+d-1  i+d i+d+1 i+d+2         N
+    # t_d * one x one x ... x one x a_ x sz x sz x ... x  sz  x a2 x one x one x ... x one
+
+    # Unit cell cycle (size N)
+    # ------------------------
+    # s0 -> s1 -> s2 -> ... -> s(N-1) -> s0 "one"
+    for i in range(N):
+        g[f"s{i}", f"s{(i + 1) % N}"] = op_one
+
+    # On-cite potentials
+    # ------------------
+    # Term: e_i * n_i
+    # s(i) -> e "e_i * n"
+    for i in range(N):
+        t = blocks[0, i, i]
+        if is_nonzero(t):
+            g[f"s{i}", "e"] = scalar_product(t, op_n)
+
+    # Hoppings
+    # --------
+    # Term: t_{ij} a^+_i a_j, i < j
+    # s(i) -> path(i,1) "a_"
+    # path(i,j) -> path(i,j+1) "sz"
+    # path(i,j) -> e "t_(i,j) * a2"
+    for i in range(N):
+        g[f"s{i}", f"path{i},1"] = op_a1_
+        for j in range(1, len(blocks) * N - i - 1):
+            g[f"path{i},{j}", f"path{i},{j + 1}"] = op_sz
+        for j in range(1, len(blocks) * N - i):
+            t = blocks_rview[i, i + j]
+            if is_nonzero(t):
+                g[f"path{i},{j}", "e"] = scalar_product(t, op_a2)
+
+    # H.c.
+    # ----
+    # Term: t_{ij}^* a^+_j a_i, i < j
+    # s(i) -> path_hc(i,1) "a"
+    # path_hc(i,j) -> path_hc(i,j+1) "sz"
+    # path_hc(i,j) -> e "t_(i,j)_ * a2_"
+    for i in range(N):
+        g[f"s{i}", f"path_hc{i},1"] = op_a1
+        for j in range(1, len(blocks) * N - i - 1):
+            g[f"path_hc{i},{j}", f"path_hc{i},{j + 1}"] = op_sz
+        for j in range(1, len(blocks) * N - i):
+            t = blocks_rview[i, i + j]
+            if is_nonzero(t):
+                g[f"path_hc{i},{j}", "e"] = scalar_product(conj(t), op_a2_)
+
+    # Tail
+    # ----
+    # e -> e "one"
+    g["e", "e"] = op_one
+
+    # MPO = 1D topology
+    g.same_dims(0, 1)
+    lookup = g.get_lookup()
+    H = g.as_tensor(lookup)
+
+    n_cites = n * N
+
+    if n_cites == 1:
+        yield H[lookup[0]["s0"], lookup[1]["e"]]
+
+    else:
+        yield H[lookup[0]["s0"]]
+        for i in range(n_cites - 2):
+            yield H
+        yield H[:, lookup[1]["e"]]
+
+
+def MPO_ham_hubbard(n: int, blocks, **kwargs):
+    """
+    Assembles the Hubbard Hamiltonian MPO.
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The Hubbard Hamiltonian MPO.
+    """
+    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks), **kwargs)
+
+
+def MPO_fermion_number(n: int, i, **kwargs):
+    """
+    MPO describing single-particle density matrix elements.
+
+    Parameters
+    ----------
+    n : int
+        The length of MPO.
+    i
+        The indexes of the density matrix element desired.
+        Diagonal is assumed if a single integer is specified.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The operator of the density matrix element.
+    """
+    if isinstance(i, int):
+        j = i
+    else:
+        i, j = i
+
+    op_one, op_a_, op_a, op_z = map(fermion_operator, "i+-z")
+
+    if i < j:
+        pos1, pos2 = op_a_.dot(op_one), op_z.dot(op_a)
+    elif i > j:
+        pos1, pos2 = op_one.dot(op_a), op_a_.dot(op_z)
+        i, j = j, i
+    else:
+        pos1 = pos2 = op_a_.dot(op_a)
+
+    op_one = op_one[np.newaxis, np.newaxis, ...]
+    pos1 = pos1[np.newaxis, np.newaxis, ...]
+    pos2 = pos2[np.newaxis, np.newaxis, ...]
+    op_z = op_z[np.newaxis, np.newaxis, ...]
+
+    return MatrixProductOperator(
+        arrays=(
+            op_one if _i < i else
+            pos1 if _i == i else
+            op_z if _i < j else
+            pos2 if _i == j else
+            op_one
+            for _i in range(n)
+        ),
+        **kwargs
+    )
