@@ -1421,7 +1421,7 @@ class FSAGenerator(object):
         return result
 
 
-def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray:
+def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool = False) -> np.ndarray:
     """
     Generate the multi-band Hubbard Hamiltonian MPO tensors.
 
@@ -1430,10 +1430,13 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
     n : int
         The number of fermions.
     blocks
-        Neighbour hopping amplitude blocks.
+        Neighbour hopping amplitude blocks (the t_{ij} a^+_i a_j, i < j + H.c. term)
           * complex: nearest-neighbor hopping amplitude;
           * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
           * 3D array: tight-binding matrix blocks;
+    coulomb_blocks
+        Neighbor Coulomb blocks (the u_{ij} n_i n_j, i < j term). Same rules as for the
+        `blocks` argument are applied.
     symbolic : bool
         Symbolic tensors for debugging the MPO construction.
 
@@ -1442,10 +1445,26 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
     MPO tensors.
     """
     blocks = _hubbard_canonic_2s_form(blocks)
+    if coulomb_blocks is not None:
+        coulomb_blocks = _hubbard_canonic_2s_form(coulomb_blocks, require_real=True)
+    else:
+        coulomb_blocks = np.zeros((0,) + blocks.shape[1:])
+
+    if blocks.shape[1:] != coulomb_blocks.shape[1:]:
+        raise ValueError(f"The shapes of 'blocks' and 'coulomb_blocks' are incompatible: {blocks.shape} vs {coulomb_blocks.shape}")
 
     # N - unit cell size
     N = blocks.shape[1]
 
+    # Move the diagonal coulomb to the 1p part
+    if len(coulomb_blocks) > 0:
+        if len(blocks) == 0:
+            blocks = np.zeros((1, N, N), dtype=coulomb_blocks.dtype)
+        a = np.arange(N)
+        blocks[0, a, a] += np.diag(coulomb_blocks[0])
+        coulomb_blocks[0, a, a] = 0
+
+    # TODO: this part is here mostly for debugging; move it somewhere or create an abstraction
     if symbolic:
         op_one, op_a_, op_a, op_sz, op_n = "1", "a^", "a", "sz", "n"
         s = blocks.shape
@@ -1469,9 +1488,26 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
         blocks.shape = s
         blocks[0, range(N), range(N)] = tuple(fmt_diag.format(_i) if blocks_num[0, _i, _i] != 0 else "" for _i in range(N))
 
+        s = coulomb_blocks.shape
+        if s[1] == s[2] == 1:
+            if s[0] > 1:
+                fmt = "u_{0:d}"
+            else:
+                fmt = "u"
+        elif s[0] == 1:
+            fmt = "u_{1:d}_{2:d}"
+        else:
+            fmt = "u_{0:d}_[{1:d},{2:d}]"
+
+        coulomb_blocks_num = coulomb_blocks
+        coulomb_blocks = np.array(
+            tuple(fmt.format(*_i) if coulomb_blocks_num[_i] != 0 else "" for _i in np.ndindex(*s))
+        )
+        coulomb_blocks.shape = s
+
         scalar_product = lambda x, y: f"{{{x},{y}}}"
         dot_product = lambda x, y: f"({x},{y})"
-        conj = lambda x: x + "^"
+        conj = lambda x: np.where(x == "", "", np.core.defchararray.add(x, "^"))
         is_nonzero = lambda x: x != ""
 
     else:
@@ -1484,6 +1520,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
         is_nonzero = lambda x: x != 0
 
     blocks_rview = blocks.swapaxes(0, 1).reshape((N, len(blocks) * N))
+    coulomb_blocks_rview = coulomb_blocks.swapaxes(0, 1).reshape((N, len(coulomb_blocks) * N))
 
     # The index 1, 2 stands for the order of the operator appearing in the MPO
     op_a1 = op_a  # dot_product(op_one, op_a)
@@ -1512,35 +1549,34 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
         if is_nonzero(t):
             g[f"s{i}", "e"] = scalar_product(t, op_n)
 
+    def s2(_op_1, _op_2, _op_3, _blocks, _prefix):
+        """Two-site terms"""
+        # s(i) -> path(i,1) "_op_1"
+        # path(i,j) -> path(i,j+1) "_op_2"
+        # path(i,j) -> e "_blocks_{i,j} * _op_3"
+        for i in range(N):
+            g[f"s{i}", f"path_{_prefix}_{i},1"] = _op_1
+            for j in range(1, _blocks.shape[1] - i - 1):
+                g[f"path_{_prefix}_{i},{j}", f"path_{_prefix}_{i},{j + 1}"] = _op_2
+            for j in range(1, _blocks.shape[1] - i):
+                t = _blocks[i, i + j]
+                if is_nonzero(t):
+                    g[f"path_{_prefix}_{i},{j}", "e"] = scalar_product(t, _op_3)
+
     # Hoppings
     # --------
     # Term: t_{ij} a^+_i a_j, i < j
-    # s(i) -> path(i,1) "a_"
-    # path(i,j) -> path(i,j+1) "sz"
-    # path(i,j) -> e "t_(i,j) * a2"
-    for i in range(N):
-        g[f"s{i}", f"path{i},1"] = op_a1_
-        for j in range(1, len(blocks) * N - i - 1):
-            g[f"path{i},{j}", f"path{i},{j + 1}"] = op_sz
-        for j in range(1, len(blocks) * N - i):
-            t = blocks_rview[i, i + j]
-            if is_nonzero(t):
-                g[f"path{i},{j}", "e"] = scalar_product(t, op_a2)
+    s2(op_a1_, op_sz, op_a2, blocks_rview, "t")
 
-    # H.c.
-    # ----
+    # Hoppings H.c.
+    # -------------
     # Term: t_{ij}^* a^+_j a_i, i < j
-    # s(i) -> path_hc(i,1) "a"
-    # path_hc(i,j) -> path_hc(i,j+1) "sz"
-    # path_hc(i,j) -> e "t_(i,j)_ * a2_"
-    for i in range(N):
-        g[f"s{i}", f"path_hc{i},1"] = op_a1
-        for j in range(1, len(blocks) * N - i - 1):
-            g[f"path_hc{i},{j}", f"path_hc{i},{j + 1}"] = op_sz
-        for j in range(1, len(blocks) * N - i):
-            t = blocks_rview[i, i + j]
-            if is_nonzero(t):
-                g[f"path_hc{i},{j}", "e"] = scalar_product(conj(t), op_a2_)
+    s2(op_a1, op_sz, op_a2_, conj(blocks_rview), "thc")
+
+    # Coulomb terms
+    # -------------
+    # Term: u_{ij} n_i n_j, i < j
+    s2(op_n, op_one, op_n, coulomb_blocks_rview, "u")
 
     # Tail
     # ----
@@ -1564,7 +1600,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
         yield H[:, lookup[1]["e"]]
 
 
-def MPO_ham_hubbard(n: int, blocks, **kwargs):
+def MPO_ham_hubbard(n: int, blocks, coulomb_blocks=None, **kwargs):
     """
     Assembles the Hubbard Hamiltonian MPO.
 
@@ -1577,6 +1613,9 @@ def MPO_ham_hubbard(n: int, blocks, **kwargs):
           * complex: nearest-neighbor hopping amplitude;
           * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
           * 3D array: tight-binding matrix blocks;
+    coulomb_blocks
+        Neighbor Coulomb blocks (the u_{ij} n_i n_j, i < j term). Same rules as for the
+        `blocks` argument are applied.
     **kwargs
         Keyword arguments to the `MatrixProductOperator` constructor.
 
@@ -1585,7 +1624,32 @@ def MPO_ham_hubbard(n: int, blocks, **kwargs):
     MatrixProductOperator
         The Hubbard Hamiltonian MPO.
     """
-    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks), **kwargs)
+    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks, coulomb_blocks=coulomb_blocks), **kwargs)
+
+
+def MPO_ham_hubbard_canonic(n: int, u: float, mu:float, **kwargs):
+    """
+    Assembles the Hubbard Hamiltonian MPO (canonic version).
+    The Hamiltoninan is parametrized by a single parameter U
+    (hopping is assumed to be -1).
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    u : float
+        The Hubbard U.
+    mu : float
+        The chemical potential.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The Hubbard Hamiltonian MPO.
+    """
+    return MPO_ham_hubbard(n, [-mu * np.eye(2), -np.eye(2)], coulomb_blocks=[[(0, u), (u, 0)]], **kwargs)
 
 
 def MPO_fermion_number(n: int, i, **kwargs):

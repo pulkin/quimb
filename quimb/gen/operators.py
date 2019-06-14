@@ -980,7 +980,7 @@ def ham_hubbard_hardcore(n, t=0.5, V=1., mu=1., cyclic=True,
     return functools.reduce(operator.add, terms())
 
 
-def _hubbard_canonic_2s_form(blocks):
+def _hubbard_canonic_2s_form(blocks, require_real: bool = False):
     """
     Converts the "blocks" argument describing non-zero blocks
     of a two-site Hamiltonian terms into a canonical form.
@@ -992,6 +992,8 @@ def _hubbard_canonic_2s_form(blocks):
           * complex: nearest-neighbor hopping amplitude;
           * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
           * 3D array: tight-binding matrix blocks;
+    require_real : bool
+        If True, performs a check against zero imaginary part.
 
     Returns
     -------
@@ -1030,6 +1032,14 @@ def _hubbard_canonic_2s_form(blocks):
         raise ValueError(f"Non-Hermitian diagonal block supplied, delta = {delta:.3e}")
     else:
         blocks[0] = 0.5 * (blocks[0] + blocks[0].H)
+
+    if require_real:
+        delta = abs(blocks.imag).max()
+        if delta > 1e-14:
+            raise ValueError(f"Real-valued matrices are required, found imag part = {delta}")
+        else:
+            blocks = blocks.real
+
     return blocks
 
 

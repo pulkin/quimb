@@ -166,8 +166,6 @@ class TestTBHam:
     @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
                                                                np.exp(1.j * np.arange(9)).reshape(3, 3)]])
     def test_main(self, n, blocks):
-        """A single-particle basis."""
-
         # This part is here to ensure the test does not depend on the definition of the Pauli basis
         op_one, op_a_, op_a, op_z = map(qu.fermion_operator, "i+-z")
         op_n = op_a_.dot(op_a)
@@ -194,3 +192,35 @@ class TestTBHam:
                 ham_1p[i, j] = result ^ all
 
         assert_allclose(ham_1p, qo.ham_tb(n, blocks))
+
+
+class TestHubbardHam:
+
+    def test_symbolic_empty(self):
+        assert symbolic_mpo_contraction(qtn.hubbard_ham_mpo_tensor(1, 1, coulomb_blocks=1, symbolic=True)) == ""
+
+    def test_symbolic_empty_strange(self):
+        assert symbolic_mpo_contraction(qtn.hubbard_ham_mpo_tensor(1, [1, 0],
+                                                                   coulomb_blocks=[-1, 0], symbolic=True)) == ""
+
+    def test_symbolic_121(self):
+        assert symbolic_mpo_contraction(qtn.hubbard_ham_mpo_tensor(1, [1, 0],
+                                                                   coulomb_blocks=[1, 0], symbolic=True)) == "{e,n}"
+
+    def test_symbolic_115_pure(self):
+        assert set(str(symbolic_mpo_contraction(
+            qtn.hubbard_ham_mpo_tensor(1, [np.zeros((5, 5))], coulomb_blocks=[np.eye(5, k=2) + np.eye(5, k=-2)], symbolic=True)
+        )).split(" + ")) == {
+            "n*1*{u_0_2,n}*1*1", "1*n*1*{u_1_3,n}*1", "1*1*n*1*{u_2_4,n}",
+        }
+
+    def test_symbolic_421_mixed(self):
+        assert set(str(symbolic_mpo_contraction(
+            qtn.hubbard_ham_mpo_tensor(4, 1, coulomb_blocks=[1, 1, 1], symbolic=True)
+        )).split(" + ")) == {
+            "a^*{t,(sz,a)}*1*1", "1*a^*{t,(sz,a)}*1", "1*1*a^*{t,(sz,a)}",
+            "a*{t^,(a^,sz)}*1*1", "1*a*{t^,(a^,sz)}*1", "1*1*a*{t^,(a^,sz)}",
+            "{e,n}*1*1*1", "1*{e,n}*1*1", "1*1*{e,n}*1", "1*1*1*{e,n}",
+            "n*{u_1,n}*1*1", "1*n*{u_1,n}*1", "1*1*n*{u_1,n}",
+            "n*1*{u_2,n}*1", "1*n*1*{u_2,n}",
+        }

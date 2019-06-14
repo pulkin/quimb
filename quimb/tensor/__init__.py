@@ -45,6 +45,7 @@ from .tensor_gen import (
     NNI_ham_mbl,
     hubbard_ham_mpo_tensor,
     MPO_ham_hubbard,
+    MPO_ham_hubbard_canonic,
     MPO_fermion_number,
     MPO_fermion_total_number,
 )
@@ -120,6 +121,7 @@ __all__ = (
     "NNI_ham_mbl",
     "hubbard_ham_mpo_tensor",
     "MPO_ham_hubbard",
+    "MPO_ham_hubbard_canonic",
     "MPO_fermion_number",
     "MPO_fermion_total_number",
     "MatrixProductState",
