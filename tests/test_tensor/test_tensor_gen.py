@@ -176,7 +176,7 @@ class TestTBHam:
         vec_empty = vecs[:, id_empty]
         vec_occ = vecs[:, id_occ]
 
-        uc_size = qo._hubbard_canonic_1p_form(blocks).shape[1]
+        uc_size = qo._hubbard_canonic_2s_form(blocks).shape[1]
         N = n * uc_size
 
         def basis_1p(n, i):

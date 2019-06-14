@@ -7,7 +7,7 @@ import numpy as np
 
 from ..core import make_immutable, ikron
 from ..linalg.base_linalg import norm_fro_dense
-from ..gen.operators import spin_operator, fermion_operator, eye, _gen_mbl_random_factors, _hubbard_canonic_1p_form
+from ..gen.operators import spin_operator, fermion_operator, eye, _gen_mbl_random_factors, _hubbard_canonic_2s_form
 from ..gen.rand import randn, choice, random_seed_fn, rand_phase
 from .tensor_core import Tensor, _asarray
 from .tensor_1d import MatrixProductState, MatrixProductOperator
@@ -1441,7 +1441,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
     ------
     MPO tensors.
     """
-    blocks = _hubbard_canonic_1p_form(blocks)
+    blocks = _hubbard_canonic_2s_form(blocks)
 
     # N - unit cell size
     N = blocks.shape[1]

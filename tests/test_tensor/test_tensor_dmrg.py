@@ -343,7 +343,7 @@ class TestDMRG2:
     @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
                                                                np.exp(1.j * np.arange(9)).reshape(3, 3)]])
     def test_tight_binding(self, n, blocks):
-        from quimb.gen.operators import _hubbard_canonic_1p_form
+        from quimb.gen.operators import _hubbard_canonic_2s_form
 
         H = MPO_ham_hubbard(n, blocks)
         dmrg = DMRG2(H)
@@ -351,7 +351,7 @@ class TestDMRG2:
 
         assert_allclose(dmrg.energy, ham_tb_energy(n, blocks))
 
-        uc_size = _hubbard_canonic_1p_form(blocks).shape[1]
+        uc_size = _hubbard_canonic_2s_form(blocks).shape[1]
         N = n * uc_size
 
         try:

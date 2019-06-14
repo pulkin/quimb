@@ -980,11 +980,10 @@ def ham_hubbard_hardcore(n, t=0.5, V=1., mu=1., cyclic=True,
     return functools.reduce(operator.add, terms())
 
 
-def _hubbard_canonic_1p_form(blocks):
+def _hubbard_canonic_2s_form(blocks):
     """
-    Converts the "blocks" argument describing
-    non-zero blocks of a tight-binding Hamiltonian
-    into a canonical form.
+    Converts the "blocks" argument describing non-zero blocks
+    of a two-site Hamiltonian terms into a canonical form.
 
     Parameters
     ----------
@@ -1053,7 +1052,7 @@ def ham_tb(n: int, blocks) -> np.ndarray:
     H : array
         The non-interacting Hamiltonian matrix in the single-particle sector (band Hamiltonian).
     """
-    blocks = _hubbard_canonic_1p_form(blocks)
+    blocks = _hubbard_canonic_2s_form(blocks)
     _n = len(blocks)
     line = [i.H for i in blocks[:0:-1]] + [i for i in blocks]
     H = []
