@@ -1486,8 +1486,8 @@ def hubbard_ham_mpo_tensor(n: int, blocks, symbolic: bool = False) -> np.ndarray
     blocks_rview = blocks.swapaxes(0, 1).reshape((N, len(blocks) * N))
 
     # The index 1, 2 stands for the order of the operator appearing in the MPO
-    op_a1 = dot_product(op_one, op_a)
-    op_a1_ = dot_product(op_a_, op_one)
+    op_a1 = op_a  # dot_product(op_one, op_a)
+    op_a1_ = op_a_  # dot_product(op_a_, op_one)
     op_a2 = dot_product(op_sz, op_a)
     op_a2_ = dot_product(op_a_, op_sz)
 
