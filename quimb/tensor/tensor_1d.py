@@ -2321,7 +2321,6 @@ class MatrixProductOperator(TensorNetwork1DFlat,
             for array, site_tag, inds, order in zip(arrays, site_tags,
                                                     gen_inds(), gen_orders()):
 
-                print(array.shape, order)
                 yield Tensor(array.transpose(*order), inds=inds, tags=site_tag)
 
         super().__init__(gen_tensors(), structure=site_tag_id, sites=sites,
