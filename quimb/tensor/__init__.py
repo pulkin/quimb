@@ -46,6 +46,7 @@ from .tensor_gen import (
     hubbard_ham_mpo_tensor,
     MPO_ham_hubbard,
     MPO_fermion_number,
+    MPO_fermion_total_number,
 )
 from .tensor_1d import (
     MatrixProductState,
@@ -120,6 +121,7 @@ __all__ = (
     "hubbard_ham_mpo_tensor",
     "MPO_ham_hubbard",
     "MPO_fermion_number",
+    "MPO_fermion_total_number",
     "MatrixProductState",
     "MatrixProductOperator",
     "Dense1D",

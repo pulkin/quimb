@@ -24,6 +24,7 @@ from quimb.tensor import (
     MPO_ham_mbl,
     MPO_ham_hubbard,
     MPO_fermion_number,
+    MPO_fermion_total_number,
     MovingEnvironment,
     DMRG1,
     DMRG2,
@@ -372,6 +373,11 @@ class TestDMRG2:
                 rho_1p[i, j] = result ^ all
 
         assert_allclose(rho_1p, rho_ref, atol=1e-5)
+
+        n_tot = MPO_fermion_total_number(N)
+        bra.align_(n_tot, ket)
+        result = (bra & n_tot & ket) ^ all
+        assert_allclose(result, np.trace(rho_ref))
 
 
 class TestDMRGX:

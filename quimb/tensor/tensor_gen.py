@@ -1638,3 +1638,33 @@ def MPO_fermion_number(n: int, i, **kwargs):
         ),
         **kwargs
     )
+
+
+def MPO_fermion_total_number(n: int, **kwargs):
+    """
+    MPO describing the total particle number operator.
+
+    Parameters
+    ----------
+    n : int
+        The length of MPO.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The total particle number operator.
+    """
+    op_one, op_a_, op_a = map(fermion_operator, "i+-")
+    op_n = op_a_.dot(op_a)
+    if n == 1:
+        return MatrixProductOperator(arrays=[op_n], **kwargs)
+    g = FSAGenerator(2)
+    g["s", "s"] = op_one
+    g["s", "e"] = op_n
+    g["e", "e"] = op_one
+    g.same_dims(0, 1)
+    lookup = g.get_lookup()
+    N = g.as_tensor(lookup)
+    return MatrixProductOperator(arrays=[N[lookup[0]["s"]]] + [N] * (n-2) + [N[:, lookup[1]["e"]]], **kwargs)
