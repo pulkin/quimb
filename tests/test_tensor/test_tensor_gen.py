@@ -1,4 +1,5 @@
 from itertools import product
+import functools
 
 import pytest
 import numpy as np
@@ -128,6 +129,47 @@ def symbolic_mpo_contraction(mpo_tensors, s: str = " + ", p: str = "*"):
     return result.squeeze()
 
 
+@functools.lru_cache(maxsize=2)
+def get_1p_basis():
+    """Convention-dependent 1p basis"""
+    op_a_, op_a = map(qu.fermion_operator, "+-")
+    op_n = op_a_.dot(op_a)
+    vals, vecs = np.linalg.eigh(op_n)
+    id_empty, id_occ = np.argsort(vals)
+    vec_empty = vecs[:, id_empty]
+    vec_occ = vecs[:, id_occ]
+    return vec_empty, vec_occ
+
+
+def MPS_np_state(n, i):
+    """
+    Assembles a fermionic n-particle state.
+
+    Parameters
+    ----------
+    n : int
+        The size of the space.
+    i
+        An ordered list of occupied states.
+
+    Returns
+    -------
+    MPS_product_state
+        A product state where the specific degrees of freedom are occupied.
+    """
+    if isinstance(i, int):
+        i = (i,)
+    i = np.array(i)
+    if len(set(i)) != len(i):
+        raise ValueError(f"Some of the input states are not unique: {i}")
+    v, _ = get_1p_basis()
+    op_one, op_a_, op_z = map(qu.fermion_operator, "i+z")
+    result = v[np.newaxis, :] * np.ones(n)[:, np.newaxis]
+    for _i in i:
+        result = np.einsum("nij,nj->ni", [op_one] * _i + [op_a_] + [op_z] * (n-_i-1), result)
+    return qtn.MPS_product_state(result)
+
+
 class TestTBHam:
 
     def test_symbolic_empty(self):
@@ -166,27 +208,16 @@ class TestTBHam:
     @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
                                                                np.exp(1.j * np.arange(9)).reshape(3, 3)]])
     def test_main(self, n, blocks):
-        # This part is here to ensure the test does not depend on the definition of the Pauli basis
-        op_one, op_a_, op_a, op_z = map(qu.fermion_operator, "i+-z")
-        op_n = op_a_.dot(op_a)
-        vals, vecs = np.linalg.eigh(op_n)
-        id_empty, id_occ = np.argsort(vals)
-        vec_empty = vecs[:, id_empty]
-        vec_occ = vecs[:, id_occ]
-
         uc_size = qo._hubbard_canonic_2s_form(blocks).shape[1]
         N = n * uc_size
-
-        def basis_1p(n, i):
-            return qtn.MPS_product_state([op_one.dot(vec_empty)] * i + [vec_occ] + [op_z.dot(vec_empty)] * (n - i - 1))
 
         mpo = qtn.MPO_ham_hubbard(n, blocks)
 
         ham_1p = np.empty((N, N), dtype=np.complex128)
         for i in range(N):
             for j in range(N):
-                bra = basis_1p(N, i)
-                ket = basis_1p(N, j)
+                bra = MPS_np_state(N, i)
+                ket = MPS_np_state(N, j)
                 bra.align_(mpo, ket)
                 result = bra & mpo & ket
                 ham_1p[i, j] = result ^ all
@@ -224,3 +255,23 @@ class TestHubbardHam:
             "n*{u_1,n}*1*1", "1*n*{u_1,n}*1", "1*1*n*{u_1,n}",
             "n*1*{u_2,n}*1", "1*n*1*{u_2,n}",
         }
+
+    @pytest.mark.parametrize("n", [2, 3])
+    @pytest.mark.parametrize("blocks", [1, (0, -2, 3), [[(0, 1, 2), (1, 0, 3), (2, 3, 0)],
+                                                        np.exp(np.arange(9)).reshape(3, 3)]])
+    def test_main(self, n, blocks):
+        uc_size = qo._hubbard_canonic_2s_form(blocks).shape[1]
+        N = n * uc_size
+
+        mpo = qtn.MPO_ham_hubbard(n, coulomb_blocks=blocks)
+
+        ham_1p = np.zeros((N, N), dtype=np.complex128)
+        for i in range(N):
+            for j in range(i + 1, N):
+                bra = MPS_np_state(N, (i, j))
+                ket = bra.H
+                bra.align_(mpo, ket)
+                result = bra & mpo & ket
+                ham_1p[i, j] = ham_1p[j, i] = result ^ all
+
+        assert_allclose(ham_1p, qo.ham_tb(n, blocks))

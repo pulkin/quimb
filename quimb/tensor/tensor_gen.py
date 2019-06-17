@@ -1421,7 +1421,7 @@ class FSAGenerator(object):
         return result
 
 
-def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool = False) -> np.ndarray:
+def hubbard_ham_mpo_tensor(n: int, blocks=None, coulomb_blocks=None, symbolic: bool = False) -> np.ndarray:
     """
     Generate the multi-band Hubbard Hamiltonian MPO tensors.
 
@@ -1444,23 +1444,35 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
     ------
     MPO tensors.
     """
-    blocks = _hubbard_canonic_2s_form(blocks)
+    # n_unit - unit cell size
+    n_unit_b, n_unit_cb = None, None
+
+    if blocks is not None:
+        blocks = _hubbard_canonic_2s_form(blocks)
+        n_unit_b = blocks.shape[1]
+
     if coulomb_blocks is not None:
         coulomb_blocks = _hubbard_canonic_2s_form(coulomb_blocks, require_real=True)
-    else:
-        coulomb_blocks = np.zeros((0,) + blocks.shape[1:])
+        n_unit_cb = coulomb_blocks.shape[1]
 
-    if blocks.shape[1:] != coulomb_blocks.shape[1:]:
+    if n_unit_b is None and n_unit_cb is None:
+        raise ValueError("Neither 'blocks' nor 'coulomb_blocks' specified: the Hamiltonian is empty")
+    elif n_unit_b is None:
+        n_unit = n_unit_cb
+        blocks = np.zeros((0, n_unit, n_unit))
+    elif n_unit_cb is None:
+        n_unit = n_unit_b
+        coulomb_blocks = np.zeros((0, n_unit, n_unit))
+    elif n_unit_b != n_unit_cb:
         raise ValueError(f"The shapes of 'blocks' and 'coulomb_blocks' are incompatible: {blocks.shape} vs {coulomb_blocks.shape}")
-
-    # N - unit cell size
-    N = blocks.shape[1]
+    else:
+        n_unit = n_unit_b
 
     # Move the diagonal coulomb to the 1p part
     if len(coulomb_blocks) > 0:
         if len(blocks) == 0:
-            blocks = np.zeros((1, N, N), dtype=coulomb_blocks.dtype)
-        a = np.arange(N)
+            blocks = np.zeros((1, n_unit, n_unit), dtype=coulomb_blocks.dtype)
+        a = np.arange(n_unit)
         blocks[0, a, a] += np.diag(coulomb_blocks[0])
         coulomb_blocks[0, a, a] = 0
 
@@ -1486,7 +1498,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
             tuple(fmt.format(*_i) if blocks_num[_i] != 0 else "" for _i in np.ndindex(*s))
         )
         blocks.shape = s
-        blocks[0, range(N), range(N)] = tuple(fmt_diag.format(_i) if blocks_num[0, _i, _i] != 0 else "" for _i in range(N))
+        blocks[0, range(n_unit), range(n_unit)] = tuple(fmt_diag.format(_i) if blocks_num[0, _i, _i] != 0 else "" for _i in range(n_unit))
 
         s = coulomb_blocks.shape
         if s[1] == s[2] == 1:
@@ -1519,8 +1531,8 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
         conj = np.conj
         is_nonzero = lambda x: x != 0
 
-    blocks_rview = blocks.swapaxes(0, 1).reshape((N, len(blocks) * N))
-    coulomb_blocks_rview = coulomb_blocks.swapaxes(0, 1).reshape((N, len(coulomb_blocks) * N))
+    blocks_rview = blocks.swapaxes(0, 1).reshape((n_unit, len(blocks) * n_unit))
+    coulomb_blocks_rview = coulomb_blocks.swapaxes(0, 1).reshape((n_unit, len(coulomb_blocks) * n_unit))
 
     # The index 1, 2 stands for the order of the operator appearing in the MPO
     op_a1 = op_a  # dot_product(op_one, op_a)
@@ -1531,20 +1543,20 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
     g = FSAGenerator(2)
     # TODO The MPO can be optimized by allowing different MPOs at different unit cell positions
     # Rules for constructing single-particle terms:
-    # AMP    1     2          i-1   i    i+1  i+2        i+d-1  i+d i+d+1 i+d+2         N
+    # AMP    1     2          i-1   i    i+1  i+2        i+d-1  i+d i+d+1 i+d+2         n_unit
     # t_d * one x one x ... x one x a_ x sz x sz x ... x  sz  x a2 x one x one x ... x one
 
-    # Unit cell cycle (size N)
+    # Unit cell cycle (size n_unit)
     # ------------------------
-    # s0 -> s1 -> s2 -> ... -> s(N-1) -> s0 "one"
-    for i in range(N):
-        g[f"s{i}", f"s{(i + 1) % N}"] = op_one
+    # s0 -> s1 -> s2 -> ... -> s(n_unit-1) -> s0 "one"
+    for i in range(n_unit):
+        g[f"s{i}", f"s{(i + 1) % n_unit}"] = op_one
 
     # On-cite potentials
     # ------------------
     # Term: e_i * n_i
     # s(i) -> e "e_i * n"
-    for i in range(N):
+    for i in range(n_unit):
         t = blocks[0, i, i]
         if is_nonzero(t):
             g[f"s{i}", "e"] = scalar_product(t, op_n)
@@ -1554,7 +1566,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
         # s(i) -> path(i,1) "_op_1"
         # path(i,j) -> path(i,j+1) "_op_2"
         # path(i,j) -> e "_blocks_{i,j} * _op_3"
-        for i in range(N):
+        for i in range(n_unit):
             g[f"s{i}", f"path_{_prefix}_{i},1"] = _op_1
             for j in range(1, _blocks.shape[1] - i - 1):
                 g[f"path_{_prefix}_{i},{j}", f"path_{_prefix}_{i},{j + 1}"] = _op_2
@@ -1588,7 +1600,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
     lookup = g.get_lookup()
     H = g.as_tensor(lookup)
 
-    n_cites = n * N
+    n_cites = n * n_unit
 
     if n_cites == 1:
         yield H[lookup[0]["s0"], lookup[1]["e"]]
@@ -1600,7 +1612,7 @@ def hubbard_ham_mpo_tensor(n: int, blocks, coulomb_blocks=None, symbolic: bool =
         yield H[:, lookup[1]["e"]]
 
 
-def MPO_ham_hubbard(n: int, blocks, coulomb_blocks=None, **kwargs):
+def MPO_ham_hubbard(n: int, blocks=None, coulomb_blocks=None, **kwargs):
     """
     Assembles the Hubbard Hamiltonian MPO.
 
@@ -1624,7 +1636,7 @@ def MPO_ham_hubbard(n: int, blocks, coulomb_blocks=None, **kwargs):
     MatrixProductOperator
         The Hubbard Hamiltonian MPO.
     """
-    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks, coulomb_blocks=coulomb_blocks), **kwargs)
+    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks=blocks, coulomb_blocks=coulomb_blocks), **kwargs)
 
 
 def MPO_ham_hubbard_canonic(n: int, u: float, mu:float, **kwargs):
@@ -1649,7 +1661,7 @@ def MPO_ham_hubbard_canonic(n: int, u: float, mu:float, **kwargs):
     MatrixProductOperator
         The Hubbard Hamiltonian MPO.
     """
-    return MPO_ham_hubbard(n, [-mu * np.eye(2), -np.eye(2)], coulomb_blocks=[[(0, u), (u, 0)]], **kwargs)
+    return MPO_ham_hubbard(n, blocks=[-mu * np.eye(2), -np.eye(2)], coulomb_blocks=[[(0, u), (u, 0)]], **kwargs)
 
 
 def MPO_fermion_number(n: int, i, **kwargs):
