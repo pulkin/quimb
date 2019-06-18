@@ -24,7 +24,7 @@ from quimb.tensor import (
     MPO_ham_mbl,
     MPO_ham_hubbard,
     MPO_ham_hubbard_canonic,
-    MPO_fermion_number,
+    get_fermion_rdm1,
     MPO_fermion_total_number,
     MovingEnvironment,
     DMRG1,
@@ -341,6 +341,8 @@ class TestDMRG2:
         assert_allclose(H_explicit, H_mpo.to_dense())
         assert_allclose(H_explicit, H_sps.A)
 
+
+class TestDMRG2Hubbard:
     @pytest.mark.parametrize("n", [2, 3])
     @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
                                                                np.exp(1.j * np.arange(9)).reshape(3, 3)]])
@@ -362,26 +364,15 @@ class TestDMRG2:
             # No DM comparison for degenerate g.s.
             return
 
-        rho_1p = np.empty((N, N), dtype=np.complex128)
+        assert_allclose(get_fermion_rdm1(dmrg.state), rho_ref, atol=1e-5)
+
         ket = dmrg.state
         bra = ket.H
-
-        for i in range(N):
-            for j in range(N):
-                dme = MPO_fermion_number(N, (i, j))
-                bra.align_(dme, ket)
-                result = bra & dme & ket
-                rho_1p[i, j] = result ^ all
-
-        assert_allclose(rho_1p, rho_ref, atol=1e-5)
-
         n_tot = MPO_fermion_total_number(N)
         bra.align_(n_tot, ket)
         result = (bra & n_tot & ket) ^ all
         assert_allclose(result, np.trace(rho_ref))
 
-
-class TestDMRG2Hubbard:
     @pytest.mark.parametrize("u", [1, 4, 8])
     def test_hubbard_empty(self, u):
         """Tests the Hubbard model without particles"""
@@ -398,7 +389,7 @@ class TestDMRG2Hubbard:
         bra.align_(N, ket)
         pnumber = (bra & N & ket) ^ all
 
-        assert_allclose(pnumber, 0, atol=1e-5)
+        assert_allclose(pnumber, 0, atol=2e-5)
 
     @pytest.mark.parametrize("u,mu,occ", [
         (1, -1.50631444, 0.37021046),

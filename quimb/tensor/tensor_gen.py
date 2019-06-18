@@ -1716,6 +1716,33 @@ def MPO_fermion_number(n: int, i, **kwargs):
     )
 
 
+def get_fermion_rdm1(state: MatrixProductState):
+    """
+    Retrieves the reduced single-particle density matrix from the `state`.
+
+    Parameters
+    ----------
+    state : MatrixProductState
+        The state to retrieve the density matrix from.
+
+    Returns
+    -------
+    array
+        A square array with the density matrix.
+    """
+    n = state.nsites
+    ket = state
+    bra = state.H
+    result = np.zeros((n, n), dtype=state.dtype)
+    for i in range(n):
+        for j in range(i, n):
+            mpo_n = MPO_fermion_number(n, (i, j))
+            bra.align_(mpo_n, ket)
+            result[i, j] = (bra & mpo_n & ket) ^ all
+            result[j, i] = np.conj(result[i, j])
+    return result
+
+
 def MPO_fermion_total_number(n: int, **kwargs):
     """
     MPO describing the total particle number operator.
