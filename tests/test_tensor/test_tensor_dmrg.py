@@ -25,7 +25,7 @@ from quimb.tensor import (
     MPO_ham_hubbard,
     MPO_ham_hubbard_canonic,
     get_fermion_rdm1,
-    MPO_fermion_total_number,
+    get_fermion_n,
     MovingEnvironment,
     DMRG1,
     DMRG2,
@@ -365,31 +365,20 @@ class TestDMRG2Hubbard:
             return
 
         assert_allclose(get_fermion_rdm1(dmrg.state), rho_ref, atol=1e-5)
-
-        ket = dmrg.state
-        bra = ket.H
-        n_tot = MPO_fermion_total_number(N)
-        bra.align_(n_tot, ket)
-        result = (bra & n_tot & ket) ^ all
-        assert_allclose(result, np.trace(rho_ref))
+        assert_allclose(get_fermion_n(dmrg.state), np.trace(rho_ref))
 
     @pytest.mark.parametrize("u", [1, 4, 8])
     def test_hubbard_empty(self, u):
         """Tests the Hubbard model without particles"""
         n = 20
-        N = MPO_fermion_total_number(2 * n)
         # The band runs from -2 .. 2: no particles at mu=-2.5 expected
         mu = -2.5
 
         H = MPO_ham_hubbard_canonic(n, u, mu)
         dmrg = DMRG2(H)
         dmrg.solve()
-        ket = dmrg.state
-        bra = ket.H
-        bra.align_(N, ket)
-        pnumber = (bra & N & ket) ^ all
 
-        assert_allclose(pnumber, 0, atol=2e-5)
+        assert_allclose(get_fermion_n(dmrg.state), 0, atol=2e-5)
 
     @pytest.mark.parametrize("u,mu,occ", [
         (1, -1.50631444, 0.37021046),
@@ -402,19 +391,11 @@ class TestDMRG2Hubbard:
         Tests the Hubbard model against Bethe ansatz: Physica A 1-2 1-27 (2003).
         The reference data can be found at https://github.com/pulkin/hubbard-bethe (the last plot).
         """
-        N = MPO_fermion_total_number(2 * n)
-        # The band runs from -2 .. 2: no particles at mu=-2.5 expected
-
         H = MPO_ham_hubbard_canonic(n, u, mu)
         dmrg = DMRG2(H)
         dmrg.solve()
-        ket = dmrg.state
-        bra = ket.H
-        bra.align_(N, ket)
-        pnumber = (bra & N & ket) ^ all
-
         # Test up to discretization error: the number of particle per cite changes with .5/n fractions
-        assert_allclose(pnumber / n, occ, atol=1./n)
+        assert_allclose(get_fermion_n(dmrg.state) / n, occ, atol=1./n)
 
 
 class TestDMRGX:

@@ -49,6 +49,7 @@ from .tensor_gen import (
     MPO_fermion_number,
     get_fermion_rdm1,
     MPO_fermion_total_number,
+    get_fermion_n,
 )
 from .tensor_1d import (
     MatrixProductState,
@@ -122,6 +123,7 @@ __all__ = (
     "MPO_fermion_number",
     "get_fermion_rdm1",
     "MPO_fermion_total_number",
+    "get_fermion_n",
     "MatrixProductState",
     "MatrixProductOperator",
     "Dense1D",

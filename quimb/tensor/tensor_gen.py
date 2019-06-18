@@ -1771,3 +1771,25 @@ def MPO_fermion_total_number(n: int, **kwargs):
     lookup = g.get_lookup()
     N = g.as_tensor(lookup)
     return MatrixProductOperator(arrays=[N[lookup[0]["s"]]] + [N] * (n-2) + [N[:, lookup[1]["e"]]], **kwargs)
+
+
+def get_fermion_n(state: MatrixProductState):
+    """
+    Retrieves the total number of particles.
+
+    Parameters
+    ----------
+    state : MatrixProductState
+        The state to calculate particles in.
+
+    Returns
+    -------
+    float
+        The particle number.
+    """
+    n = state.nsites
+    ket = state
+    bra = state.H
+    mpo_N = MPO_fermion_total_number(n)
+    bra.align_(mpo_N, ket)
+    return np.real((bra & mpo_N & ket) ^ all)
