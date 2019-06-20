@@ -88,6 +88,7 @@ from .linalg.mpi_launcher import get_mpi_pool
 # Generating objects
 from .gen.operators import (
     spin_operator,
+    fermion_operator,
     pauli,
     hadamard,
     phase_gate,
@@ -117,6 +118,9 @@ from .gen.operators import (
     destroy,
     num,
     ham_hubbard_hardcore,
+    ham_tb,
+    ham_tb_energy,
+    ham_tb_1pdm,
 )
 from .gen.states import (
     basis_vec,
@@ -306,6 +310,7 @@ __all__ = [
     'estimate_rank',
     # Gen ------------------------------------------------------------------- #
     'spin_operator',
+    'fermion_operator',
     'pauli',
     'hadamard',
     'phase_gate',
@@ -334,6 +339,9 @@ __all__ = [
     'destroy',
     'num',
     'ham_hubbard_hardcore',
+    'ham_tb',
+    'ham_tb_energy',
+    'ham_tb_1pdm',
     'zspin_projector',
     'basis_vec',
     'up',

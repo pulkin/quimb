@@ -1,12 +1,13 @@
 """Generate specific tensor network states and operators.
 """
 from numbers import Integral
+from itertools import permutations
 
 import numpy as np
 
 from ..core import make_immutable, ikron
 from ..linalg.base_linalg import norm_fro_dense
-from ..gen.operators import spin_operator, eye, _gen_mbl_random_factors
+from ..gen.operators import spin_operator, fermion_operator, eye, _gen_mbl_random_factors, _hubbard_canonic_2s_form
 from ..gen.rand import randn, choice, random_seed_fn, rand_phase
 from .tensor_core import Tensor, _asarray
 from .tensor_1d import MatrixProductState, MatrixProductOperator
@@ -139,10 +140,13 @@ def MPS_product_state(arrays, cyclic=False, **mps_opts):
     cyc_dim = (1,) if cyclic else ()
 
     def gen_array_shapes():
-        yield (*cyc_dim, 1, -1)
-        for _ in range(len(arrays) - 2):
-            yield (1, 1, -1)
-        yield (*cyc_dim, 1, -1)
+        if len(arrays) == 1:
+            yield (-1,)
+        else:
+            yield (*cyc_dim, 1, -1)
+            for _ in range(len(arrays) - 2):
+                yield (1, 1, -1)
+            yield (*cyc_dim, 1, -1)
 
     mps_arrays = (_asarray(array).reshape(*shape)
                   for array, shape in zip(arrays, gen_array_shapes()))
@@ -1247,3 +1251,545 @@ def NNI_ham_mbl(n, dh, j=1.0, seed=None, S=1 / 2, *, cyclic=False,
     H = _ham_mbl(n, dh=dh, j=j, seed=seed, S=S, cyclic=cyclic,
                  dh_dist=dh_dist, dh_dim=dh_dim, beta=beta)
     return H.build_nni(n, **nni_opts)
+
+
+class FSAGenerator(object):
+
+    def __init__(self, dims: int):
+        """
+        A finite signalling agent (FSA) MPO generator inspired by
+        PRA 78 012356 (2008). Constructs sparse MPOs from diagrams.
+
+        Parameters
+        ----------
+        dims : int
+            The number of aux bonds in MPO (= 2 * dimensionality of the problem).
+        """
+        self.dims = dims
+        self.signals = []
+        for i in range(dims):
+            self.signals.append(set())
+        self.transitions = {}
+
+    def __call__(self, *args):
+        """Sets the signal to a non-zero value."""
+        if len(args) != self.dims + 1:
+            raise ValueError(f"Wrong number of arguments supplied: expected {self.dims + 1}, got {len(args)}")
+
+        for i in range(self.dims):
+            self.signals[i].add(args[i])
+
+        self.transitions[args[:-1]] = args[-1]
+
+    def __setitem__(self, key, item):
+        return self(*key, item)
+
+    def __iter__(self):
+        for k in sorted(self.transitions):
+            yield k, self.transitions[k]
+
+    def __str__(self):
+        return ", ".join(f"{k} = {v}" for k, v in self)
+
+    def __repr__(self):
+        return f"FSAGenerator(dims={self.dims})"
+
+    def get_lookup(self, order=sorted):
+        """
+        Converts index labels into integers using
+        the order specified.
+
+        Parameters
+        ----------
+        order : Callable
+            The ordering function.
+
+        Returns
+        -------
+            Lookup dicts for every dimension.
+        """
+        return tuple(dict(zip(order(i), range(len(i)))) for i in self.signals)
+
+    def el_shape(self):
+        """
+        Returns the common element shape.
+        """
+
+        def get_shape(e):
+            if isinstance(e, np.ndarray):
+                return e.shape
+            elif isinstance(e, (list, tuple)):
+                return np.array(e).shape
+            elif isinstance(e, (str, int, float, complex)):
+                return tuple()
+            else:
+                raise ValueError(f"Unknown type to measure the shape: {e}")
+
+        result = set(map(get_shape, self.transitions.values()))
+        if len(result) == 1:
+            return result.pop()
+        elif len(result) == 0:
+            raise ValueError("No transitions declared: no shape can be measured")
+        else:
+            raise ValueError(f"Several different shapes found: {result}")
+
+    def as_tensor(self, lookup=None):
+        """
+        Assembles an MPO tensor.
+
+        Parameters
+        ----------
+        lookup : Iterable
+            Lookup tables for every dimension.
+
+        Returns
+        -------
+        A numpy tensor with the MPO.
+        """
+        dtype = np.array(tuple(self.transitions.values())).dtype
+        result = np.zeros(tuple(len(i) for i in self.signals) + self.el_shape(), dtype=dtype)
+        if lookup is None:
+            lookup = self.get_lookup()
+        for k, v in self.transitions.items():
+            index = tuple(lookup[i][kk] for i, kk in enumerate(k))
+            result[index] = v
+        return result
+
+    def same_dims(self, dim1, dim2):
+        """
+        Declares auxiliary indexes of an MPO to correspond
+        to the same dimension by truncating dead-end states.
+        This is an immediate operation.
+        """
+        new = self.signals[dim1] & self.signals[dim2]
+        self.signals[dim1] = set(new)
+        self.signals[dim2] = set(new)
+        self.remove_invalid_transitions()
+
+    def remove_invalid_transitions(self):
+        """
+        Finds and cleans-up dead-end states and transitions.
+        """
+        transaction = set()
+        for k in self.transitions.keys():
+            for i, signal in enumerate(k):
+                if signal not in self.signals[i]:
+                    transaction.add(k)
+                    break
+        for k in transaction:
+            del self.transitions[k]
+
+    def remove_signals(self, dim: int, *signals):
+        """
+        Removes specific signals from the dimension.
+
+        Parameters
+        ----------
+        dim : int
+            The dimension to process.
+        *signals
+            Signals to remove.
+        """
+        signals = set(signals)
+        self.signals[dim] -= signals
+
+        for k in self.transitions.keys():
+            if k[dim] in signals:
+                del self.transitions[k]
+
+    def constrain_signals(self, dim, *signals):
+        """
+        Constrains the specific dimension to a
+        subset of signals.
+
+        Parameters
+        ----------
+        dim : int
+            The dimension to process.
+        *signals
+            Signals to keep.
+        """
+        self.remove_signals(dim, *(set(self.signals[dim]) - set(signals)))
+
+    def copy(self):
+        """
+        Returns a deep copy of self.
+        """
+        result = self.__class__(self.dims)
+        result.signals = list(set(i) for i in self.signals)
+        result.transitions = dict(self.transitions)
+        return result
+
+
+def hubbard_ham_mpo_tensor(n: int, blocks=None, coulomb_blocks=None, symbolic: bool = False) -> np.ndarray:
+    """
+    Generate the multi-band Hubbard Hamiltonian MPO tensors.
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    blocks
+        Neighbour hopping amplitude blocks (the t_{ij} a^+_i a_j, i < j + H.c. term)
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+    coulomb_blocks
+        Neighbor Coulomb blocks (the u_{ij} n_i n_j, i < j term). Same rules as for the
+        `blocks` argument are applied.
+    symbolic : bool
+        Symbolic tensors for debugging the MPO construction.
+
+    Yields
+    ------
+    MPO tensors.
+    """
+    # n_unit - unit cell size
+    n_unit_b, n_unit_cb = None, None
+
+    if blocks is not None:
+        blocks = _hubbard_canonic_2s_form(blocks)
+        n_unit_b = blocks.shape[1]
+
+    if coulomb_blocks is not None:
+        coulomb_blocks = _hubbard_canonic_2s_form(coulomb_blocks, require_real=True)
+        n_unit_cb = coulomb_blocks.shape[1]
+
+    if n_unit_b is None and n_unit_cb is None:
+        raise ValueError("Neither 'blocks' nor 'coulomb_blocks' specified: the Hamiltonian is empty")
+    elif n_unit_b is None:
+        n_unit = n_unit_cb
+        blocks = np.zeros((0, n_unit, n_unit))
+    elif n_unit_cb is None:
+        n_unit = n_unit_b
+        coulomb_blocks = np.zeros((0, n_unit, n_unit))
+    elif n_unit_b != n_unit_cb:
+        raise ValueError(f"The shapes of 'blocks' and 'coulomb_blocks' are incompatible: {blocks.shape} vs {coulomb_blocks.shape}")
+    else:
+        n_unit = n_unit_b
+
+    # Move the diagonal coulomb to the 1p part
+    if len(coulomb_blocks) > 0:
+        if len(blocks) == 0:
+            blocks = np.zeros((1, n_unit, n_unit), dtype=coulomb_blocks.dtype)
+        a = np.arange(n_unit)
+        blocks[0, a, a] += np.diag(coulomb_blocks[0])
+        coulomb_blocks[0, a, a] = 0
+
+    # TODO: this part is here mostly for debugging; move it somewhere or create an abstraction
+    if symbolic:
+        op_one, op_a_, op_a, op_sz, op_n = "1", "a^", "a", "sz", "n"
+        s = blocks.shape
+        if s[1] == s[2] == 1:
+            if s[0] > 2:
+                fmt = "t_{0:d}"
+            else:
+                fmt = "t"
+            fmt_diag = "e"
+        elif s[0] == 1:
+            fmt = "t_{1:d}_{2:d}"
+            fmt_diag = "e_{:d}"
+        else:
+            fmt = "t_{0:d}_[{1:d},{2:d}]"
+            fmt_diag = "e_{:d}"
+
+        blocks_num = blocks
+        blocks = np.array(
+            tuple(fmt.format(*_i) if blocks_num[_i] != 0 else "" for _i in np.ndindex(*s))
+        )
+        blocks.shape = s
+        blocks[0, range(n_unit), range(n_unit)] = tuple(fmt_diag.format(_i) if blocks_num[0, _i, _i] != 0 else "" for _i in range(n_unit))
+
+        s = coulomb_blocks.shape
+        if s[1] == s[2] == 1:
+            if s[0] > 1:
+                fmt = "u_{0:d}"
+            else:
+                fmt = "u"
+        elif s[0] == 1:
+            fmt = "u_{1:d}_{2:d}"
+        else:
+            fmt = "u_{0:d}_[{1:d},{2:d}]"
+
+        coulomb_blocks_num = coulomb_blocks
+        coulomb_blocks = np.array(
+            tuple(fmt.format(*_i) if coulomb_blocks_num[_i] != 0 else "" for _i in np.ndindex(*s))
+        )
+        coulomb_blocks.shape = s
+
+        scalar_product = lambda x, y: f"{{{x},{y}}}"
+        dot_product = lambda x, y: f"({x},{y})"
+        conj = lambda x: np.where(x == "", "", np.core.defchararray.add(x, "^"))
+        is_nonzero = lambda x: x != ""
+
+    else:
+        op_one, op_a_, op_a, op_sz = map(fermion_operator, "i+-z")
+        op_n = op_a_.dot(op_a)
+
+        scalar_product = lambda x, y: x * y
+        dot_product = np.dot
+        conj = np.conj
+        is_nonzero = lambda x: x != 0
+
+    blocks_rview = blocks.swapaxes(0, 1).reshape((n_unit, len(blocks) * n_unit))
+    coulomb_blocks_rview = coulomb_blocks.swapaxes(0, 1).reshape((n_unit, len(coulomb_blocks) * n_unit))
+
+    # The index 1, 2 stands for the order of the operator appearing in the MPO
+    op_a1 = op_a  # dot_product(op_one, op_a)
+    op_a1_ = op_a_  # dot_product(op_a_, op_one)
+    op_a2 = dot_product(op_sz, op_a)
+    op_a2_ = dot_product(op_a_, op_sz)
+
+    g = FSAGenerator(2)
+    # TODO The MPO can be optimized by allowing different MPOs at different unit cell positions
+    # Rules for constructing single-particle terms:
+    # AMP    1     2          i-1   i    i+1  i+2        i+d-1  i+d i+d+1 i+d+2         n_unit
+    # t_d * one x one x ... x one x a_ x sz x sz x ... x  sz  x a2 x one x one x ... x one
+
+    # Unit cell cycle (size n_unit)
+    # ------------------------
+    # s0 -> s1 -> s2 -> ... -> s(n_unit-1) -> s0 "one"
+    for i in range(n_unit):
+        g[f"s{i}", f"s{(i + 1) % n_unit}"] = op_one
+
+    # On-cite potentials
+    # ------------------
+    # Term: e_i * n_i
+    # s(i) -> e "e_i * n"
+    for i in range(n_unit):
+        t = blocks[0, i, i]
+        if is_nonzero(t):
+            g[f"s{i}", "e"] = scalar_product(t, op_n)
+
+    def s2(_op_1, _op_2, _op_3, _blocks, _prefix):
+        """Two-site terms"""
+        # s(i) -> path(i,1) "_op_1"
+        # path(i,j) -> path(i,j+1) "_op_2"
+        # path(i,j) -> e "_blocks_{i,j} * _op_3"
+        for i in range(n_unit):
+            g[f"s{i}", f"path_{_prefix}_{i},1"] = _op_1
+            for j in range(1, _blocks.shape[1] - i - 1):
+                g[f"path_{_prefix}_{i},{j}", f"path_{_prefix}_{i},{j + 1}"] = _op_2
+            for j in range(1, _blocks.shape[1] - i):
+                t = _blocks[i, i + j]
+                if is_nonzero(t):
+                    g[f"path_{_prefix}_{i},{j}", "e"] = scalar_product(t, _op_3)
+
+    # Hoppings
+    # --------
+    # Term: t_{ij} a^+_i a_j, i < j
+    s2(op_a1_, op_sz, op_a2, blocks_rview, "t")
+
+    # Hoppings H.c.
+    # -------------
+    # Term: t_{ij}^* a^+_j a_i, i < j
+    s2(op_a1, op_sz, op_a2_, conj(blocks_rview), "thc")
+
+    # Coulomb terms
+    # -------------
+    # Term: u_{ij} n_i n_j, i < j
+    s2(op_n, op_one, op_n, coulomb_blocks_rview, "u")
+
+    # Tail
+    # ----
+    # e -> e "one"
+    g["e", "e"] = op_one
+
+    # MPO = 1D topology
+    g.same_dims(0, 1)
+    lookup = g.get_lookup()
+    H = g.as_tensor(lookup)
+
+    n_cites = n * n_unit
+
+    if n_cites == 1:
+        yield H[lookup[0]["s0"], lookup[1]["e"]]
+
+    else:
+        yield H[lookup[0]["s0"]]
+        for i in range(n_cites - 2):
+            yield H
+        yield H[:, lookup[1]["e"]]
+
+
+def MPO_ham_hubbard(n: int, blocks=None, coulomb_blocks=None, **kwargs):
+    """
+    Assembles the Hubbard Hamiltonian MPO.
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+    coulomb_blocks
+        Neighbor Coulomb blocks (the u_{ij} n_i n_j, i < j term). Same rules as for the
+        `blocks` argument are applied.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The Hubbard Hamiltonian MPO.
+    """
+    return MatrixProductOperator(arrays=hubbard_ham_mpo_tensor(n, blocks=blocks, coulomb_blocks=coulomb_blocks), **kwargs)
+
+
+def MPO_ham_hubbard_canonic(n: int, u: float, mu:float, **kwargs):
+    """
+    Assembles the Hubbard Hamiltonian MPO (canonic version).
+    The Hamiltoninan is parametrized by a single parameter U
+    (hopping is assumed to be -1).
+
+    Parameters
+    ----------
+    n : int
+        The number of fermions.
+    u : float
+        The Hubbard U.
+    mu : float
+        The chemical potential.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The Hubbard Hamiltonian MPO.
+    """
+    return MPO_ham_hubbard(n, blocks=[-mu * np.eye(2), -np.eye(2)], coulomb_blocks=[[(0, u), (u, 0)]], **kwargs)
+
+
+def MPO_fermion_number(n: int, i, **kwargs):
+    """
+    MPO describing single-particle density matrix elements.
+
+    Parameters
+    ----------
+    n : int
+        The length of MPO.
+    i
+        The indexes of the density matrix element desired.
+        Diagonal is assumed if a single integer is specified.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The operator of the density matrix element.
+    """
+    if isinstance(i, int):
+        j = i
+    else:
+        i, j = i
+
+    op_one, op_a_, op_a, op_z = map(fermion_operator, "i+-z")
+
+    if i < j:
+        pos1, pos2 = op_a_.dot(op_one), op_z.dot(op_a)
+    elif i > j:
+        pos1, pos2 = op_one.dot(op_a), op_a_.dot(op_z)
+        i, j = j, i
+    else:
+        pos1 = pos2 = op_a_.dot(op_a)
+
+    op_one = op_one[np.newaxis, np.newaxis, ...]
+    pos1 = pos1[np.newaxis, np.newaxis, ...]
+    pos2 = pos2[np.newaxis, np.newaxis, ...]
+    op_z = op_z[np.newaxis, np.newaxis, ...]
+
+    return MatrixProductOperator(
+        arrays=(
+            op_one if _i < i else
+            pos1 if _i == i else
+            op_z if _i < j else
+            pos2 if _i == j else
+            op_one
+            for _i in range(n)
+        ),
+        **kwargs
+    )
+
+
+def get_fermion_rdm1(state: MatrixProductState):
+    """
+    Retrieves the reduced single-particle density matrix from the `state`.
+
+    Parameters
+    ----------
+    state : MatrixProductState
+        The state to retrieve the density matrix from.
+
+    Returns
+    -------
+    array
+        A square array with the density matrix.
+    """
+    n = state.nsites
+    ket = state
+    bra = state.H
+    result = np.zeros((n, n), dtype=state.dtype)
+    for i in range(n):
+        for j in range(i, n):
+            mpo_n = MPO_fermion_number(n, (i, j))
+            bra.align_(mpo_n, ket)
+            result[i, j] = (bra & mpo_n & ket) ^ all
+            result[j, i] = np.conj(result[i, j])
+    return result
+
+
+def MPO_fermion_total_number(n: int, **kwargs):
+    """
+    MPO describing the total particle number operator.
+
+    Parameters
+    ----------
+    n : int
+        The length of MPO.
+    **kwargs
+        Keyword arguments to the `MatrixProductOperator` constructor.
+
+    Returns
+    -------
+    MatrixProductOperator
+        The total particle number operator.
+    """
+    op_one, op_a_, op_a = map(fermion_operator, "i+-")
+    op_n = op_a_.dot(op_a)
+    if n == 1:
+        return MatrixProductOperator(arrays=[op_n], **kwargs)
+    g = FSAGenerator(2)
+    g["s", "s"] = op_one
+    g["s", "e"] = op_n
+    g["e", "e"] = op_one
+    g.same_dims(0, 1)
+    lookup = g.get_lookup()
+    N = g.as_tensor(lookup)
+    return MatrixProductOperator(arrays=[N[lookup[0]["s"]]] + [N] * (n-2) + [N[:, lookup[1]["e"]]], **kwargs)
+
+
+def get_fermion_n(state: MatrixProductState):
+    """
+    Retrieves the total number of particles.
+
+    Parameters
+    ----------
+    state : MatrixProductState
+        The state to calculate particles in.
+
+    Returns
+    -------
+    float
+        The particle number.
+    """
+    n = state.nsites
+    ket = state
+    bra = state.H
+    mpo_N = MPO_fermion_total_number(n)
+    bra.align_(mpo_N, ket)
+    return np.real((bra & mpo_N & ket) ^ all)

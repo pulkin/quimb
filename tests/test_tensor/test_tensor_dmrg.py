@@ -11,6 +11,8 @@ from quimb import (
     is_eigenvector,
     eigh,
     heisenberg_energy,
+    ham_tb_energy,
+    ham_tb_1pdm,
 )
 
 from quimb.tensor import (
@@ -21,6 +23,10 @@ from quimb.tensor import (
     MPO_ham_XY,
     MPO_ham_heis,
     MPO_ham_mbl,
+    MPO_ham_hubbard,
+    MPO_ham_hubbard_canonic,
+    get_fermion_rdm1,
+    get_fermion_n,
     MovingEnvironment,
     DMRG1,
     DMRG2,
@@ -353,6 +359,62 @@ class TestDMRG2:
         bra.align_(ket)
 
         assert_allclose(abs((bra & ket) ^ all), 1)
+
+
+class TestDMRG2Hubbard:
+    @pytest.mark.parametrize("n", [2, 3])
+    @pytest.mark.parametrize("blocks", [1 + .1j, (-2, 1+.1j), [np.diag(np.arange(3)),
+                                                               np.exp(1.j * np.arange(9)).reshape(3, 3)]])
+    def test_tight_binding(self, n, blocks):
+        from quimb.gen.operators import _hubbard_canonic_2s_form
+
+        H = MPO_ham_hubbard(n, blocks)
+        dmrg = DMRG2(H)
+        dmrg.solve()
+
+        assert_allclose(dmrg.energy, ham_tb_energy(n, blocks))
+
+        uc_size = _hubbard_canonic_2s_form(blocks).shape[1]
+        N = n * uc_size
+
+        try:
+            rho_ref = ham_tb_1pdm(n, blocks)
+        except ValueError:
+            # No DM comparison for degenerate g.s.
+            return
+
+        assert_allclose(get_fermion_rdm1(dmrg.state), rho_ref, atol=1e-5)
+        assert_allclose(get_fermion_n(dmrg.state), np.trace(rho_ref))
+
+    @pytest.mark.parametrize("u", [1, 4, 8])
+    def test_hubbard_empty(self, u):
+        """Tests the Hubbard model without particles"""
+        n = 20
+        # The band runs from -2 .. 2: no particles at mu=-2.5 expected
+        mu = -2.5
+
+        H = MPO_ham_hubbard_canonic(n, u, mu)
+        dmrg = DMRG2(H)
+        dmrg.solve()
+
+        assert_allclose(get_fermion_n(dmrg.state), 0, atol=2e-5)
+
+    @pytest.mark.parametrize("u,mu,occ", [
+        (1, -1.50631444, 0.37021046),
+        (4, -1.02681342, 0.42209222),
+        (8, -1.02745609, 0.37529211),
+    ])
+    @pytest.mark.parametrize("n", [6, 9])
+    def test_hubbard_bethe(self, u, mu, occ, n):
+        """
+        Tests the Hubbard model against Bethe ansatz: Physica A 1-2 1-27 (2003).
+        The reference data can be found at https://github.com/pulkin/hubbard-bethe (the last plot).
+        """
+        H = MPO_ham_hubbard_canonic(n, u, mu)
+        dmrg = DMRG2(H)
+        dmrg.solve()
+        # Test up to discretization error: the number of particle per cite changes with .5/n fractions
+        assert_allclose(get_fermion_n(dmrg.state) / n, occ, atol=1./n)
 
 
 class TestDMRGX:

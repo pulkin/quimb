@@ -32,6 +32,34 @@ class TestSpinOperator:
         assert_allclose(qu.eigvalsh(op), np.linspace(-S, S, D), atol=1e-13)
 
 
+class TestFermions:
+    def test(self):
+        o, create, annihilate, z = map(qu.fermion_operator, "i+-z")
+
+        c = create & z & z, o & create & z, o & o & create
+        a = annihilate & z & z, o & annihilate & z, o & o & annihilate
+
+        one = np.eye(c[0].shape[0])
+
+        # P.n. operator
+        for _c, _a in zip(c, a):
+            assert_allclose(_c.dot(_a) + _a.dot(_c), one)
+
+        # Double c/a
+        for _c in c:
+            assert_allclose(_c.dot(_c), 0)
+        for _a in a:
+            assert_allclose(_a.dot(_a), 0)
+
+        # Anticommutation symmetric
+        assert_allclose(c[0].dot(c[1]), -c[1].dot(c[0]))
+        assert_allclose(a[0].dot(a[2]), -a[2].dot(a[0]))
+
+        # Anticommutation asymmetric
+        assert_allclose(c[0].dot(a[2]), -a[2].dot(c[0]))
+        assert_allclose(a[0].dot(c[1]), -c[1].dot(a[0]))
+
+
 class TestPauli:
     def test_pauli_dim2(self):
         for dir in (1, 'x', 'X',
@@ -236,3 +264,93 @@ class TestHubbardSpinless:
         ens = [qu.expec(cn, qu.ptr(gs, dims, i)) for i in range(8)]
         for en in ens:
             assert en == pytest.approx(0.5, rel=1e-6)
+
+
+class TestTB:
+
+    @pytest.mark.parametrize("t", [0, 1 + .2j])
+    def test_nn(self, t):
+        assert_allclose(qu.ham_tb(3, t), [
+            (0, t, 0),
+            (np.conj(t), 0, t),
+            (0, np.conj(t), 0),
+        ])
+
+    def test_nnn(self):
+        e, t1, t2 = 1, 1j, .1 + .2j
+        assert_allclose(qu.ham_tb(2, (e, t1, t2)), [
+            (e, t1),
+            (np.conj(t1), e),
+        ])
+        assert_allclose(qu.ham_tb(3, (e, t1, t2)), [
+            (e, t1, t2),
+            (np.conj(t1), e, t1),
+            (np.conj(t2), np.conj(t1), e),
+        ])
+        assert_allclose(qu.ham_tb(4, (e, t1, t2)), [
+            (e, t1, t2, 0),
+            (np.conj(t1), e, t1, t2),
+            (np.conj(t2), np.conj(t1), e, t1),
+            (0, np.conj(t2), np.conj(t1), e),
+        ])
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_nnn_raise(self):
+        """Non-Hermitian diagonal"""
+        qu.ham_tb(3, (.1j, 0))
+
+    def test_block(self):
+        e, t = np.eye(2), np.array([(.1, .2), (.3, .4j)])
+        e[1, 1] += 2
+        z = np.zeros_like(e)
+        assert_allclose(qu.ham_tb(1, (e, t)), e)
+        assert_allclose(qu.ham_tb(2, (e, t)), np.block([
+            [e, t],
+            [np.conj(t).T, e],
+        ]))
+        assert_allclose(qu.ham_tb(3, (e, t)), np.block([
+            [e, t, z],
+            [np.conj(t).T, e, t],
+            [z, np.conj(t).T, e],
+        ]))
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_block_fail(self):
+        """Shape mismatch"""
+        qu.ham_tb(3, (np.zeros(3), np.eye(2)))
+
+    @pytest.mark.parametrize("n", [3, 4])
+    @pytest.mark.parametrize("t", [1, 1 + .1j])
+    def test_nn_energy_dm(self, n, t):
+        def ref_k(n):
+            return np.linspace(0, qu.pi, n+1, endpoint=False)[1:]
+
+        def ref_e(n, e, t):
+            return 2 * abs(t) * np.cos(ref_k(n)) + e
+
+        def ref_etot(n, e, t):
+            e = ref_e(n, e, t)
+            return e[e < 0].sum()
+
+        def ref_psi(n, t):
+            k = ref_k(n)[np.newaxis, :]
+            j = np.arange(0, n)[:, np.newaxis]
+            phi = np.angle(t)
+            psi = 2.j * np.sin(k * (j+1)) * np.exp(- 1.j * phi * j)
+            psi /= np.linalg.norm(psi, axis=0)
+            return psi
+
+        def ref_dm(n, e, t):
+            psi = ref_psi(n, t)
+            e = ref_e(n, e, t)
+            psi = psi[:, e < 0]
+            return psi.dot(psi.conj().T)
+
+        e = -0.1
+        assert_allclose(qu.ham_tb_energy(n, (e, t)), ref_etot(n, e, t), atol=1e-12)
+        assert_allclose(qu.ham_tb_1pdm(n, (e, t)), ref_dm(n, e, t), atol=1e-12)
+
+    @pytest.mark.xfail(raises=ValueError)
+    def test_zero_energy_fail(self):
+        """Zero-energy states (g.s. degeneracy)"""
+        qu.ham_tb_1pdm(5, 1 + .1j)

@@ -102,6 +102,44 @@ def spin_operator(label, S=1 / 2, **kwargs):
     return op
 
 
+@functools.lru_cache(maxsize=16)
+def fermion_operator(label, **kwargs):
+    """
+    Generates fermion operators.
+
+    Parameters
+    ----------
+    label : str
+        The type of operator, can be one of four options:
+            - ``{'z', 'Z'}``, anti-commutation operator.
+            - ``{'+', 'c'}``, Creation operator.
+            - ``{'-', 'a'}``, Annihilation operator.
+            - ``{'i', 'I'}``, identity operator.
+    kwargs
+        Passed to :func:`quimbify`.
+
+    Returns
+    -------
+    S : immutable operator
+        The spin operator.
+    """
+    s = {
+        "z": "z",
+        "Z": "z",
+        "+": "+",
+        "c": "+",
+        "-": "-",
+        "d": "-",
+        "i": "i",
+        "I": "i",
+    }[label]
+    result = spin_operator(s, **kwargs)
+    if s == "z":
+        result = qu(2*result)
+        make_immutable(result)
+    return result
+
+
 @functools.lru_cache(maxsize=8)
 def pauli(xyz, dim=2, **kwargs):
     """Generates the pauli operators for dimension 2 or 3.
@@ -940,3 +978,144 @@ def ham_hubbard_hardcore(n, t=0.5, V=1., mu=1., cyclic=True,
         return par_reduce(operator.add, terms())
 
     return functools.reduce(operator.add, terms())
+
+
+def _hubbard_canonic_2s_form(blocks, require_real: bool = False):
+    """
+    Converts the "blocks" argument describing non-zero blocks
+    of a two-site Hamiltonian terms into a canonical form.
+
+    Parameters
+    ----------
+    blocks : complex, Iterable
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+    require_real : bool
+        If True, performs a check against zero imaginary part.
+
+    Returns
+    -------
+    blocks : array
+        A 3D array with square tight-binding blocks.
+    """
+    # Make iterable
+    try:
+        iter(blocks)
+    except TypeError:
+        blocks = 0, blocks
+
+    # Make block-shape
+    blocks = np.array(blocks)
+    if not np.issubdtype(blocks.dtype, np.number):
+        raise ValueError(f"Numpy returned a non-numeric ({blocks.dtype}) array: {blocks}")
+
+    if blocks.ndim == 1:
+        blocks.shape = len(blocks), 1, 1
+
+    if blocks.ndim != 3:
+        raise ValueError(f"Tight-binding blocks are expected to be 3D, found {blocks.ndim} dimensions")
+
+    if blocks.shape[1] != blocks.shape[2]:
+        raise ValueError(
+            f"The last two dimensions have to compose a square matrix, found the shape {blocks.shape} instead")
+
+    if any(i == 0 for i in blocks.shape):
+        raise ValueError(f"Zero dimensions are not allowed: {blocks.shape}")
+
+    blocks = qu(blocks)
+
+    # TODO check if quimb builtins posses hermitian checks and use it here if possible
+    delta = abs(blocks[0] - blocks[0].H).max()
+    if delta > 1e-14:
+        raise ValueError(f"Non-Hermitian diagonal block supplied, delta = {delta:.3e}")
+    else:
+        blocks[0] = 0.5 * (blocks[0] + blocks[0].H)
+
+    if require_real:
+        delta = abs(blocks.imag).max()
+        if delta > 1e-14:
+            raise ValueError(f"Real-valued matrices are required, found imag part = {delta}")
+        else:
+            blocks = blocks.real
+
+    return blocks
+
+
+def ham_tb(n: int, blocks) -> np.ndarray:
+    """
+    Tight-binding nearest-neighbors Hamiltonian.
+
+    Parameters
+    ----------
+    n : int
+        The number of unit cells.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+
+    Returns
+    -------
+    H : array
+        The non-interacting Hamiltonian matrix in the single-particle sector (band Hamiltonian).
+    """
+    blocks = _hubbard_canonic_2s_form(blocks)
+    _n = len(blocks)
+    line = [i.H for i in blocks[:0:-1]] + [i for i in blocks]
+    H = []
+    z = np.zeros_like(blocks[0])
+    for i in range(n):
+        left = i - _n + 1
+        right = n - _n - i
+        fr = _n - i - 1
+        to = _n - i + n - 1
+        H.append([z] * max(left, 0) + line[max(0, fr):min(2 * _n - 1, to)] + [z] * max(right, 0))
+    return np.block(H)
+
+
+def ham_tb_energy(n: int, blocks) -> float:
+    """
+    Tight-binding nearest-neighbors Hamiltonian ground state energy.
+
+    n : int
+        The number of unit cells.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+
+    Returns
+    -------
+    E : float
+        The total ground-state energy of the band Hamiltonian.
+    """
+    e = np.linalg.eigvalsh(ham_tb(n, blocks))
+    return e[e < 0].sum()
+
+
+def ham_tb_1pdm(n: int, blocks, tol: float = 1e-7) -> np.ndarray:
+    """
+    Tight-binding nearest-neighbors Hamiltonian single-particle density matrix.
+
+    n : int
+        The number of unit cells.
+    blocks
+        Neighbour hopping amplitude blocks.
+          * complex: nearest-neighbor hopping amplitude;
+          * 1D array: on-cite energy and hopping amplitudes (from nearest to furthermost);
+          * 3D array: tight-binding matrix blocks;
+
+    Returns
+    -------
+    dm : array
+        The single-particle density matrix.
+    """
+    e, psi = np.linalg.eig(ham_tb(n, blocks))
+    if np.sum(abs(e) < tol) > 0:
+        raise ValueError(f"Zero-energy states prevent reliable 1pdm construction: {e}")
+    psi = psi[:, e < 0]
+    return psi.dot(psi.conj().T)
